@@ -1,0 +1,83 @@
+# This workflow uses actions that are not certified by GitHub.
+# They are provided by a third-party and are governed by
+# separate terms of service, privacy policy, and support
+# documentation.
+
+# GitHub recommends pinning actions to a commit SHA.
+# To get a newer version, you will need to update the SHA.
+# You can also reference a tag or branch, but the action may change without warning.
+
+name: Deploy to GKE
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: ${{ secrets.GKE_PROJECT }}
+  GKE_CLUSTER: gke-${{ secrets.GKE_PROJECT }}
+  GKE_ZONE: us-east1
+  HELM_RELEASE_NAME: argocd
+  HELM_CHART_PATH: charts/argocd/
+  HELM_NAMESPACE: argocd
+
+jobs:
+  setup-deploy:
+    name: Setup and Deploy
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    # Setup gcloud CLI
+    - uses: GoogleCloudPlatform/github-actions/setup-gcloud@master
+      with:
+        version: '417.0.0'
+        service_account_email: ${{ secrets.GOOGLE_EMAIL }}
+        service_account_key: ${{ secrets.GOOGLE_CREDENTIALS }}
+
+    # Configure docker to use the gcloud command-line tool as a credential helper
+    - run: |
+        # Set up docker to authenticate
+        # via gcloud command-line tool.
+        gcloud auth configure-docker
+
+    # Get the GKE credentials so we can deploy to the cluster
+    - name: Authenticate to GKE
+      run: |
+        gcloud container clusters get-credentials $GKE_CLUSTER \
+          --zone $GKE_ZONE \
+          --project $GKE_PROJECT
+
+    # Install helm
+    - name: Install Helm
+      run: |
+        curl https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | bash
+    
+    - name: Helm Update Dependencies
+      run: |
+        helm dependencies update $HELM_CHART_PATH
+
+    - name: Helm Lint
+      run: |
+        helm lint $HELM_CHART_PATH
+    
+    - name: Helm Diff
+      run: |
+        helm diff upgrade $HELM_RELEASE_NAME $HELM_CHART_PATH \
+          --namespace=$HELM_NAMESPACE \
+          --allow-unreleased
+    
+    # Deploy to GKE
+    ## Only deploy on push to main
+    - name: Deploy
+      if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+      run: |
+        helm upgrade -i $HELM_RELEASE_NAME $HELM_CHART_PATH \
+          --namespace=$HELM_NAMESPACE \ 
+          --create-namespace
+          --wait --timeout 1200
+        kubectl get all -o wide
